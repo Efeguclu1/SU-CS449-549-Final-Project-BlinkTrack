@@ -72,41 +72,74 @@ def get_gaze_ratio(landmarks, w, h):
 
 
 class Calibration:
+
     def __init__(self):
         self.calibrated = False
-        self.center_x = 0.5
-        self.center_y = 0.0
-        
-    def calibrate(self, gaze_x, gaze_y):
-        self.center_x = gaze_x
-        self.center_y = gaze_y
+
+        self.center = (0.5, 0.0)
+        self.left = None
+        self.right = None
+        self.top = None
+        self.bottom = None
+
+        self.min_span = 1e-3
+
+    def calibrate_5pt(self, center, top, bottom, left, right):
+        self.center = center
+        self.top = top
+        self.bottom = bottom
+        self.left = left
+        self.right = right
         self.calibrated = True
-        print(f"  Kalibrasyon merkezi: ({gaze_x:.3f}, {gaze_y:.3f})")
-        
-    def map_to_screen(self, gaze_x, gaze_y, screen_w, screen_h, sensitivity=1.0):
+        print("  ✓ 5-nokta kalibrasyon kaydedildi:")
+        print(f"    center={self.center} top={self.top} bottom={self.bottom} left={self.left} right={self.right}")
+
+    def _span(self, a, b):
+        s = abs(a - b)
+        return max(self.min_span, s)
+
+    def map_to_screen(self, gaze_x, gaze_y, screen_w, screen_h, sensitivity=0.65):
         if not self.calibrated:
             return screen_w // 2, screen_h // 2
+
+        cx, cy = self.center
+
+        # X asimetrik
+        if gaze_x >= cx:
+            span = self._span(self.right[0], cx)
+            dx = (gaze_x - cx) / span
+        else:
+            span = self._span(cx, self.left[0])
+            dx = (gaze_x - cx) / span
+
+        # Y asimetrik (down -> gaze_y artar)
+        if gaze_y >= cy:
+            span = self._span(self.bottom[1], cy)
+            dy = (gaze_y - cy) / span
+        else:
+            span = self._span(cy, self.top[1])
+            dy = (gaze_y - cy) / span
+
+        dx *= sensitivity
+        dy *= sensitivity
+
+        DEADZONE_X = 0.06
+        DEADZONE_Y = 0.06
+        if abs(dx) < DEADZONE_X:
+            dx = 0.0
+        if abs(dy) < DEADZONE_Y:
+            dy = 0.0
         
-        # Merkeze göre fark hesapla
-        diff_x = gaze_x - self.center_x
-        diff_y = gaze_y - self.center_y
-        
-        # Ekran koordinatına çevir
-        # Sola bakınca (diff_x azalır) cursor sola gitmeli
-        # Yukarı bakınca (diff_y azalır) cursor yukarı gitmeli
-        
-        # Hassasiyet ve ölçekleme
-        scale_x = 6.0 * sensitivity  # Yatay hareket çarpanı
-        scale_y = 4.0 * sensitivity  # Dikey hareket çarpanı
-        
-        # Merkez + fark (X ters çünkü webcam ayna)
-        norm_x = 0.5 + diff_x * scale_x
-        norm_y = 0.5 - diff_y * scale_y
-        
-        # Sınırla
+        gain = 1.0 + 0.25 * max(abs(dx), abs(dy))
+        dx *= gain
+        dy *= gain
+
+        norm_x = 0.5 + dx * 0.5
+        norm_y = 0.5 - dy * 0.5
+
         norm_x = max(0.02, min(0.98, norm_x))
         norm_y = max(0.02, min(0.98, norm_y))
-        
+
         return int(norm_x * screen_w), int(norm_y * screen_h)
 
 
@@ -118,24 +151,29 @@ class BlinkDetector:
         self.last_blink = None
         self.pending = False
         self.max_single = 0.4
-        self.double_window = 0.55
+        self.double_window = 0.75
         self.prolonged = 0.8
-        
+        self.is_closed = False
+
     def update(self, ear):
         now = time.time()
         result = None
         closed = ear < self.threshold
-        
+        self.is_closed = closed
+
         if closed and not self.eye_closed:
             self.eye_closed = True
             self.close_time = now
-        elif not closed and self.eye_closed:
+
+        elif (not closed) and self.eye_closed:
             self.eye_closed = False
             if self.close_time:
                 duration = now - self.close_time
+
                 if duration >= self.prolonged:
                     result = "prolonged"
                     self.pending = False
+
                 elif duration <= self.max_single:
                     if self.pending and self.last_blink and (now - self.last_blink) <= self.double_window:
                         result = "double"
@@ -143,24 +181,26 @@ class BlinkDetector:
                     else:
                         self.pending = True
                         self.last_blink = now
+
             self.close_time = None
-        
-        if self.pending and self.last_blink and (now - self.last_blink) > self.double_window:
+
+        SINGLE_DELAY = self.double_window + 0.15
+        if self.pending and self.last_blink and (now - self.last_blink) > SINGLE_DELAY:
             result = "single"
             self.pending = False
-        
+
         return result
 
 
 class FittsLawDemo:
-    def __init__(self, window_w=1200, window_h=800):
+    def __init__(self, window_w=2100, window_h=1180):
         self.window_w = window_w
         self.window_h = window_h
         self.center_x = window_w // 2
         self.center_y = window_h // 2
         
         # Hedef ayarları (Fitts' Law parametreleri)
-        self.target_sizes = [50, 70, 90]        # Piksel (W - width)
+        self.target_sizes = [90, 110, 130]        # Piksel (W - width)
         self.target_distances = [150, 250, 350]  # Piksel (D - distance)
         self.trials_per_condition = 2            # Her koşul için deneme
         
@@ -341,12 +381,9 @@ class FittsLawDemo:
     
     def _draw_calibrating(self, display):
         """Kalibrasyon ekranı"""
-        cv2.circle(display, (self.center_x, self.center_y), 30, (0, 255, 255), 3)
-        cv2.circle(display, (self.center_x, self.center_y), 8, (0, 255, 255), -1)
-        
         cv2.putText(display, "KALIBRASYON", (self.center_x - 80, self.center_y - 60),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-        cv2.putText(display, "Ortadaki noktaya bakin...", (self.center_x - 120, self.center_y + 60),
+        cv2.putText(display, "Ekrandaki  hedef noktasina bakin...", (self.center_x - 120, self.center_y + 60),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     
     def _draw_countdown(self, display):
@@ -444,12 +481,40 @@ def main():
     blink_detector = BlinkDetector(threshold=0.24)
     
     # Ayarlar
-    smoothing = 0.3        # Hızlı ama yumuşak tepki
-    sensitivity = 1.0      # Başlangıç değeri (scale zaten 8x)
+    # --- Menü demo ile aynı stabilizasyon ayarları ---
+    freeze_until = 0.0
+    gaze_smooth = 0.15
+    smooth_gx, smooth_gy = 0.5, 0.0
+
+    smoothing = 0.18
+    sensitivity = 0.65
     prev_x, prev_y = demo.center_x, demo.center_y
-    
-    # Kalibrasyon
+
+    # --- 5-nokta kalibrasyon akışı ---
+    calib_mode = False
+    calib_stage = 0
     calib_samples = []
+    samples_per_stage = 45
+
+    def calib_targets():
+        cx, cy = demo.center_x, demo.center_y
+        margin = 120
+        return [
+            ("MERKEZ", (cx, cy)),
+            ("YUKARI", (cx, margin)),
+            ("ASAGI", (cx, demo.window_h - margin)),
+            ("SOL", (margin, cy)),
+            ("SAG", (demo.window_w - margin, cy)),
+        ]
+
+    collected = {
+        "MERKEZ": None,
+        "YUKARI": None,
+        "ASAGI": None,
+        "SOL": None,
+        "SAG": None,
+    }
+
     
     window_name = "BlinkTrack - Fitts' Law Demo"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -492,28 +557,78 @@ def main():
                 ear = (eye_aspect_ratio(left_pts) + eye_aspect_ratio(right_pts)) / 2
                 
                 # Kalibrasyon modu
-                if demo.state == "calibrating":
+                # 1) Blink update (is_closed güncellenir)
+                blink = blink_detector.update(ear)
+                now = time.time()
+
+                # 2) Göz kapanır kapanmaz cursor'u kilitle
+                if blink_detector.is_closed:
+                    freeze_until = max(freeze_until, now + 0.25)
+
+                # 3) Blink event olunca da biraz daha kilitle
+                if blink in ("single", "double", "prolonged"):
+                    freeze_until = max(freeze_until, now + 0.35)
+
+                # 4) Calibration center deadzone
+                if calibration.calibrated:
+                    gx = gaze_x - calibration.center[0]
+                    gy = gaze_y - calibration.center[1]
+                    GAZE_DZ_X = 0.008
+                    GAZE_DZ_Y = 0.006
+                    if abs(gx) < GAZE_DZ_X:
+                        gaze_x = calibration.center[0]
+                    if abs(gy) < GAZE_DZ_Y:
+                        gaze_y = calibration.center[1]
+
+                # 5) Smooth gaze (sadece göz AÇIKKEN ve kalibrasyon modunda değilken)
+                if (not blink_detector.is_closed):
+                    smooth_gx = smooth_gx + gaze_smooth * (gaze_x - smooth_gx)
+                    smooth_gy = smooth_gy + gaze_smooth * (gaze_y - smooth_gy)
+
+                # 6) 5-nokta kalibrasyon toplama (demo.state calibrating iken)
+                if calib_mode and demo.state == "calibrating":
                     calib_samples.append((gaze_x, gaze_y))
-                    if len(calib_samples) >= 60:
-                        avg_x = np.mean([s[0] for s in calib_samples])
-                        avg_y = np.mean([s[1] for s in calib_samples])
-                        calibration.calibrate(avg_x, avg_y)
+                    if len(calib_samples) >= samples_per_stage:
+                        label, _pos = calib_targets()[calib_stage]
+                        avg_x = float(np.mean([s[0] for s in calib_samples]))
+                        avg_y = float(np.mean([s[1] for s in calib_samples]))
+                        collected[label] = (avg_x, avg_y)
+
                         calib_samples = []
-                        demo.state = "countdown"
-                        demo.countdown_start = time.time()
-                        print("Kalibrasyon tamamlandı!")
+                        calib_stage += 1
+
+                        if calib_stage >= 5:
+                            calibration.calibrate_5pt(
+                                center=collected["MERKEZ"],
+                                top=collected["YUKARI"],
+                                bottom=collected["ASAGI"],
+                                left=collected["SOL"],
+                                right=collected["SAG"],
+                            )
+                            calib_mode = False
+                            calib_stage = 0
+
+                            smooth_gx, smooth_gy = calibration.center
+                            
+                            demo.state = "countdown"
+                            demo.countdown_start = time.time()
+                            print("✓ 5-Nokta Kalibrasyon tamamlandı!")
+                            
+                        else:
+                            next_label, _ = calib_targets()[calib_stage]
+                            print(f"→ Şimdi: {next_label} noktasına bakın...")
+
                 
                 # Cursor güncelle
-                if calibration.calibrated:
+                if calibration.calibrated and (now >= freeze_until):
                     target_x, target_y = calibration.map_to_screen(
-                        gaze_x, gaze_y, demo.window_w, demo.window_h, sensitivity
+                        smooth_gx, smooth_gy, demo.window_w, demo.window_h, sensitivity
                     )
                     demo.cursor_x = int(prev_x + (target_x - prev_x) * smoothing)
                     demo.cursor_y = int(prev_y + (target_y - prev_y) * smoothing)
                     prev_x, prev_y = demo.cursor_x, demo.cursor_y
                 
                 # Blink algılama
-                blink = blink_detector.update(ear)
                 
                 if blink == "double" and demo.state == "running":
                     success, dist = demo.check_hit()
@@ -541,6 +656,25 @@ def main():
             
             # Çiz
             display = demo.draw(frame, frame, ear)
+            # --- 5-nokta kalibrasyon overlay (Menu demo ile aynı) ---
+            if calib_mode:
+                label, pos = calib_targets()[calib_stage]
+
+                # ekran çerçevesi
+                cv2.rectangle(display, (0, 0), (demo.window_w, demo.window_h), (0, 100, 100), 5)
+
+                # metin
+                cv2.putText(
+                    display,
+                    f"Kalibrasyon: {label}  ({len(calib_samples)}/{samples_per_stage})",
+                    (demo.center_x - 220, demo.center_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2
+                )
+
+                # hedef nokta
+                cv2.circle(display, pos, 28, (0, 255, 255), 3)
+                cv2.circle(display, pos, 6, (0, 255, 255), -1)
+
             cv2.imshow(window_name, display)
             
             key = cv2.waitKey(1) & 0xFF
@@ -549,8 +683,13 @@ def main():
             elif key == ord(' '):
                 if demo.state == "waiting":
                     demo.state = "calibrating"
+                    calib_mode = True
+                    calib_stage = 0
                     calib_samples = []
-                    print("Kalibrasyon başladı...")
+                    for k in collected:
+                        collected[k] = None
+                    print("Kalibrasyon başladı!")
+                    print("→ Şimdi: MERKEZ noktasına bakın...")
             elif key == ord('s') and demo.state == "finished":
                 filename = demo.save_results()
                 print(f"Sonuçlar kaydedildi: {filename}")
