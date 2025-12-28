@@ -96,12 +96,12 @@ class Calibration:
         # Yukarı bakınca (diff_y azalır) cursor yukarı gitmeli
         
         # Hassasiyet ve ölçekleme
-        scale_x = 8.0 * sensitivity  # Yatay hareket çarpanı
-        scale_y = 6.0 * sensitivity  # Dikey hareket çarpanı
+        scale_x = 6.0 * sensitivity  # Yatay hareket çarpanı
+        scale_y = 4.0 * sensitivity  # Dikey hareket çarpanı
         
         # Merkez + fark (X ters çünkü webcam ayna)
         norm_x = 0.5 + diff_x * scale_x
-        norm_y = 0.5 + diff_y * scale_y
+        norm_y = 0.5 - diff_y * scale_y
         
         # Sınırla
         norm_x = max(0.02, min(0.98, norm_x))
@@ -494,7 +494,7 @@ def main():
                 # Kalibrasyon modu
                 if demo.state == "calibrating":
                     calib_samples.append((gaze_x, gaze_y))
-                    if len(calib_samples) >= 30:
+                    if len(calib_samples) >= 60:
                         avg_x = np.mean([s[0] for s in calib_samples])
                         avg_y = np.mean([s[1] for s in calib_samples])
                         calibration.calibrate(avg_x, avg_y)

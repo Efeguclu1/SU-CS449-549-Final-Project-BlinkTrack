@@ -120,7 +120,7 @@ class Calibration:
         
         # Ekran koordinatına çevir
         norm_x = 0.5 - diff_x * 0.5
-        norm_y = 0.5 + diff_y * 0.5
+        norm_y = 0.5 - diff_y * 0.5
         
         # Sınırla
         norm_x = max(0, min(1, norm_x))
@@ -206,7 +206,7 @@ def main():
     # Ayarlar
     cursor_enabled = False
     smoothing = 0.25       # Daha hızlı tepki
-    sensitivity = 1.5      # Daha hassas
+    sensitivity = 1.1      # Daha hassas
     prev_x, prev_y = screen_w // 2, screen_h // 2
     
     # Kalibrasyon modu
